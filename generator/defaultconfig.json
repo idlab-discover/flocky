@@ -1,0 +1,14 @@
+{
+	"minEdgeNodes": 1,
+	"maxEdgeNodes": 1,
+	"edgeNodeStep": 1,
+	"minFogNodes": 60,
+	"maxFogNodes": 60,
+	"fogNodeStep": 25,
+	"iterations": 1,
+	"maxPingDiff": 20,
+	"slaMaxPing": 8,
+	"numComponents": 2,
+	"implsPerComponent": 1,
+	"densityMap": "flattopo.png"
+}

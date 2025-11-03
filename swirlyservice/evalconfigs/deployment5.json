@@ -1,0 +1,49 @@
+{
+    "ApiVersion":"v1/beta",
+    "Kind":"Application",
+    "Metadata":{
+       "Name":"TestApp5",
+       "Labels":null,
+       "Annotations":null
+    },
+    "Spec":{
+       "Components":[
+          {
+             "Name":"First component",
+             "Type":"Component C",
+             "Properties":{
+                
+             },
+             "Traits":[
+                {
+                   "Type":"GreenEnergy",
+                   "Properties":{
+                      "Required":"true"
+                   }
+                }
+             ],
+             "Scopes":{
+                
+             }
+          },
+          {
+             "Name":"Second component",
+             "Type":"Component B",
+             "Properties":{
+                
+             },
+             "Traits":[
+                {
+                   "Type":"SecureRuntime",
+                   "Properties":{
+                      "Required":"true"
+                   }
+                }
+             ],
+             "Scopes":{
+                
+             }
+          }
+       ]
+    }
+ }

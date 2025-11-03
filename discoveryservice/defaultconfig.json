@@ -1,0 +1,58 @@
+{
+    "discoAPIPort": 31000,
+    "repoAPIPort": 32000,
+    "initialNodes": {"test2": "192.168.1.54"},
+    "maxPing": 100,
+    "nodeID": "test",
+    "nodeType": "servicenode",
+    "pingPeriod": 1000,
+    "testMode": true,
+    "cheatyMinimalPing": 0,
+    "cheatyMinimalPingMap": {"test2": 50},
+    "basicComponentDefs": {"Component A": [
+        {
+            "ApiVersion":"v1/beta",
+            "Kind":"ComponentDefinition",
+            "Metadata":{
+                "Name":"Implementation A.1",
+                "Labels":{
+                    
+                },
+                "Annotations":null
+            },
+            "Spec":{
+                "Workload":{
+                    "Type":"Container",
+                    "Definition":{
+                        "ApiVersion":"",
+                        "Kind":""
+                    }
+                },
+                "Schematic":{
+                    "Definition":{
+                        "name":"TestApp",
+                        "image":"gitlab.ilabt.imec.be:4567/fledge/benchmark/dash:1.0.0-capstan",
+                        "command":[
+                            "./dashserver.so"
+                        ],
+                        "resources":{
+                            "limits":{
+                                "cpu":"500m",
+                                "memory":"300M"
+                            },
+                            "requests":{
+                                "cpu":"100m",
+                                "memory":"100M"
+                            }
+                        },
+                        "imagePullPolicy":"Always"
+                    },
+                    "Params":null,
+                    "BaseComponent":"Component A",
+                    "BaseResources":null,
+                    "MaxResources":null
+                }
+            }
+        }
+    ]}
+}

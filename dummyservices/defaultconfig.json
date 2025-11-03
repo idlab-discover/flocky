@@ -1,0 +1,16 @@
+{
+    "featherPort": 33000,
+    "warrensPort": 34000,
+    "discoAPIPort": 31000,
+    "repoAPIPort": 32000, 
+    "simMultipleDummies": 1,
+    "simMemory": 2000,
+    "simCores": 2,
+    "simSecureEnclaveTrait": false,
+    "simSecureRuntimeTrait": true,
+    "simGreenEnergyTrait": true,
+    "simAttestationTrait": false,
+    "simNetworkEncryptionTrait": true
+}
+
+

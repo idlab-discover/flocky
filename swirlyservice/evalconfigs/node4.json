@@ -1,0 +1,12 @@
+{
+    "repoPort": 32000,
+    "discoPort": 31000,
+    "fledgePort": 33000,
+    "swirlyPort": 35000,
+    "deploymentPort": 36000,
+    "serviceMonitorType": "fledge",
+    "serviceLocatorType": "hosts",
+    "maxPing": 30,
+    "nodeID": "node4",
+    "testMode": true
+}

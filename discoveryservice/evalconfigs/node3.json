@@ -1,0 +1,105 @@
+{
+    "discoAPIPort": 31000,
+    "repoAPIPort": 32000,
+    "initialNodes": [],
+    "maxPing": 100,
+    "nodeID": "node2",
+    "nodeType": "servicenode",
+    "pingPeriod": 1000,
+    "testMode": true,
+    "cheatyMinimalPing": 0,
+    "cheatyMinimalPingMap": {"node0": 10, "node1": 30, "node3": 5, "node4": 15},
+    "basicComponentDefs": {
+        "Component B": [
+            {
+                "ApiVersion":"v1/beta",
+                "Kind":"ComponentDefinition",
+                "Metadata":{
+                    "Name":"Implementation B.1",
+                    "Labels":{
+                        
+                    },
+                    "Annotations":null
+                },
+                "Spec":{
+                    "Workload":{
+                        "Type":"Unikernel",
+                        "Definition":{
+                            "ApiVersion":"v1/beta",
+                            "Kind":"WorkloadTypeDefinition"
+                        }
+                    },
+                    "Schematic":{
+                        "Definition":{
+                            "name":"TestApp",
+                            "image":"gitlab.ilabt.imec.be:4567/fledge/benchmark/dash:1.0.0-capstan",
+                            "command":[
+                                "./benchmarkapp 100000000 3"
+                            ],
+                            "resources":{
+                                "limits":{
+                                    "cpu":"3",
+                                    "memory":"100M"
+                                },
+                                "requests":{
+                                    "cpu":"3",
+                                    "memory":"100M"
+                                }
+                            },
+                            "imagePullPolicy":"Always"
+                        },
+                        "Params":null,
+                        "BaseComponent":"Component B",
+                        "BaseResources":null,
+                        "MaxResources":null
+                    }
+                }
+            }
+        ], "Component C": [
+            {
+                "ApiVersion":"v1/beta",
+                "Kind":"ComponentDefinition",
+                "Metadata":{
+                    "Name":"Implementation C.1",
+                    "Labels":{
+                        
+                    },
+                    "Annotations":null
+                },
+                "Spec":{
+                    "Workload":{
+                        "Type":"Unikernel",
+                        "Definition":{
+                            "ApiVersion":"v1/beta",
+                            "Kind":"WorkloadTypeDefinition"
+                        }
+                    },
+                    "Schematic":{
+                        "Definition":{
+                            "name":"TestApp",
+                            "image":"gitlab.ilabt.imec.be:4567/fledge/benchmark/dash:1.0.0-capstan",
+                            "command":[
+                                "./benchmarkapp 100000000 1"
+                            ],
+                            "resources":{
+                                "limits":{
+                                    "cpu":"1",
+                                    "memory":"100M"
+                                },
+                                "requests":{
+                                    "cpu":"1",
+                                    "memory":"100M"
+                                }
+                            },
+                            "imagePullPolicy":"Always"
+                        },
+                        "Params":null,
+                        "BaseComponent":"Component C",
+                        "BaseResources":null,
+                        "MaxResources":null
+                    }
+                }
+            }
+        ]
+    }
+}

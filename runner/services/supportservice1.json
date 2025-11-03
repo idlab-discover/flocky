@@ -1,0 +1,1 @@
+{"metadata":{"name":"fogservice1","creationTimestamp":null,"labels":{"maxClients":"1000","minClients":"0"}},"spec":{"containers":[{"name":"","resources":{"limits":{"cpu":"1","memory":"100Mi","storage":"100Mi"},"requests":{"cpu":"1","memory":"100Mi","storage":"100Mi"}}}]},"status":{}}

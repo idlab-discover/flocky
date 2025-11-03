@@ -1,0 +1,13 @@
+{
+	"discoPort": 31000,
+	"minEdgeNodes": 1,
+	"maxEdgeNodes": 1,
+	"edgeNodeStep": 1,
+	"minFogNodes": 60,
+	"maxFogNodes": 60,
+	"fogNodeStep": 25,
+	"iterations": 1,
+	"monitorPeriod": 10,
+	"monitorLoops": 20,
+	"ethInterface": "enp8s0"
+}

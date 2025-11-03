@@ -1,0 +1,25 @@
+{
+    "discoAPIPort": 31007,
+    "nodeID": "f7",
+    "shared_memory": {
+        "metadata_name": "/ml_weights_shm_meta",
+        "weights_name": "/ml_weights_shm_py2go",
+
+        "metaPath": "/dev/shm/ml_weights_shm_meta",
+	    "shmPath": "/dev/shm/ml_weights_shm_py2go"   
+    },
+    "shared_memory_go2py": {
+        "weights_name": "/ml_weights_shm_go2py",
+        
+        "shmPath": "/dev/shm/ml_weights_shm_go2py"   
+    },
+    "semaphores": {
+        "metadata": "/sem_meta",
+        "python_to_go": "/sem_py2go",
+        "go_to_python": "/sem_go2py"
+    },
+    "semaphores_go2py": {
+        "python_to_go": "/sem_py2go_go2py",
+        "go_to_python": "/sem_go2py_go2py"
+    }
+}

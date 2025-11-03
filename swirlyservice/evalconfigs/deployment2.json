@@ -1,0 +1,49 @@
+{
+    "ApiVersion":"v1/beta",
+    "Kind":"Application",
+    "Metadata":{
+       "Name":"TestApp2",
+       "Labels":null,
+       "Annotations":null
+    },
+    "Spec":{
+       "Components":[
+          {
+             "Name":"First component",
+             "Type":"Component A",
+             "Properties":{
+                
+             },
+             "Traits":[
+                {
+                   "Type":"SecureRuntime",
+                   "Properties":{
+                      "Required":"true"
+                   }
+                }
+             ],
+             "Scopes":{
+                
+             }
+          },
+          {
+             "Name":"Second component",
+             "Type":"Component C",
+             "Properties":{
+                
+             },
+             "Traits":[
+                {
+                   "Type":"SecureRuntime",
+                   "Properties":{
+                      "Required":"true"
+                   }
+                }
+             ],
+             "Scopes":{
+                
+             }
+          }
+       ]
+    }
+ }

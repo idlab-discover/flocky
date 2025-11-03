@@ -1,0 +1,8 @@
+{
+    "deploymentPort": 36000,
+    "fledgePort": 33000,
+    "swirlyPort": 35000,
+    "orchestrator": "fledge",
+    "nodeID": "node4",
+    "testMode": false
+}
