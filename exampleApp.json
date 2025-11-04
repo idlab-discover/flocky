@@ -1,0 +1,106 @@
+{
+   "ApiVersion":"v1/beta",
+   "Kind":"Application",
+   "Metadata":{
+      "Name":"TestApp",
+      "Labels":null,
+      "Annotations":null
+   },
+   "Spec":{
+      "Components":[
+         {
+            "Name":"First component",
+            "Type":"Component A",
+            "Properties":{
+               
+            },
+            "Traits":[
+               {
+                  "Type":"GreenEnergy",
+                  "Properties":{
+                     "Required":"true"
+                  }
+               },
+               {
+                  "Type":"NodeNetworkEncryption",
+                  "Properties":{
+                     "Required":"true"
+                  }
+               }
+            ],
+            "Scopes":{
+               
+            }
+         },
+         {
+            "Name":"Second component",
+            "Type":"Component B",
+            "Properties":{
+               
+            },
+            "Traits":[
+               {
+                  "Type":"SecureRuntime",
+                  "Properties":{
+                     "Required":"true"
+                  }
+               }
+            ],
+            "Scopes":{
+               
+            }
+         },
+         {
+            "Name":"ML component",
+            "Type":"Component ML",
+            "Properties":{
+               
+            },
+            "Traits":[
+               {
+                  "Type":"discover.flocky.oam.MLInference",
+                  "Properties":{
+                     "Required":"true"
+                  }
+               },
+               {
+                  "Type":"discover.flocky.oam.MLAccelerator",
+                  "Properties":{
+                     "Required":"true"
+                  }
+               },
+               {
+                  "Type":"discover.flocky.oam.MLGossipLearning",
+                  "Properties":{
+                     "LearningType":"DeltaSum",
+                     "ReadShm":[
+                        {
+                           "Key":"Model A",
+                           "Size":65536,
+                           "channelName":"shmem_fromml",
+                           "channelPath":"/path/to/shmem_fromml",
+                           "semaWait":"shmem_fromml_waitsemaphore",
+                           "semaSignal":"shmem_fromml_signalsemaphore"
+                        }
+                     ],
+                     "Required":"true",
+                     "WriteShm":[
+                        {
+                           "Key":"Model A",
+                           "Size":65536,
+                           "channelName":"shmem_toml",
+                           "channelPath":"/path/to/shmem_toml",
+                           "semaWait":"shmem_toml_waitsemaphore",
+                           "semaSignal":"shmem_toml_signalsemaphore"
+                        }
+                     ]
+                  }
+               }
+            ],
+            "Scopes":{
+               
+            }
+         }
+      ]
+   }
+}
