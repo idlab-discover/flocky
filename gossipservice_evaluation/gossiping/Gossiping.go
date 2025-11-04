@@ -73,26 +73,6 @@ func InitGossiping() {
 	// And add new neighbours as it runs
 	//-------------------------------------------------------
 
-	// In a separate goroutine, retry outbound joins periodically
-	/*go func() {
-		ticker := time.NewTicker(5 * time.Second) // retry interval :contentReference[oaicite:7]{index=7}
-		defer ticker.Stop()
-		// Optional: implement exponential backoff or jitter here :contentReference[oaicite:8]{index=8}
-		for range ticker.C {
-			urls := make([]string, 0, len(initialPeers))
-			for id, pc := range initialPeers {
-				if id != selfNodeID {
-					urls = append(urls, pc.KnownUrl)
-				}
-			}
-			if n, err := gossiper.Join(urls); err != nil {
-				log.Warnf("Batch join failed: %v", err)
-			} else {
-				log.Infof("Successfully joined %d peer(s)", n)
-				return
-			}
-		}
-	}()*/
 	go func() {
 		updatePeersFromDiscovery(gossiper, selfNodeID)
 	}()

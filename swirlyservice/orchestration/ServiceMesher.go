@@ -154,31 +154,6 @@ func findMatchingComponentProviderByApplication(cProviders []ComponentProvider, 
 	return nil
 }
 
-/*func DeployApplication(application oam.Application) {
-	//log.Infof("Deploy support components for %s", application.Metadata.Name)
-
-	for _, component := range application.Spec.Components {
-		success := false
-		var bestNode *qoe.ActiveProvider
-		var subapp *oam.SubApplication //oam.ComponentDef
-		for !success {
-			bestNode, subapp = findBestComponentProvider(component, nil)
-			if bestNode != nil {
-				success = wsclient.TryRegisterClientWithNode(net.IP(bestNode.Node.NetInfo.PrimaryAddress), bestNode.Node.Name, *subapp)
-			} else {
-				break
-			}
-		}
-		if bestNode == nil {
-			return
-		}
-		//Here, we use the concrete component name, because we might require other concrete types of the same component too depending on traits
-		checkAddComponentProvider(*subapp, bestNode, application.Metadata.Name)
-		updateServerFor(component.Type, net.IP(bestNode.Node.NetInfo.PrimaryAddress))
-
-	}
-}*/
-
 func DeploySupportComponentsFor(application oam.Application) error {
 	log.Infof("%d Deploy support components for %s", time.Now().UnixMilli(), application.Metadata.Name)
 	//supportComponents := config.Cfg.SupportComponents[application]
@@ -218,7 +193,7 @@ func DeploySupportComponentsFor(application oam.Application) error {
 		err := updateServerFor(component.Type, bestNode.Node.NetInfo.PrimaryAddress)
 		log.Infof("%d DNS info for component registered", time.Now().UnixMilli())
 		if err != nil {
-			log.Errorf("Failed to locally register component provider", err)
+			log.Errorf("Failed to locally register component provider %v", err)
 			generalErr = err
 		}
 	}

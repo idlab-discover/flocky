@@ -354,23 +354,6 @@ func MakeCopyWeightsToShm(weightCh chan WeightUpdate) func([]byte) error {
 		//update := <-updateCh
 		offset := 0
 
-		// Iterate through each weight array
-		/*for i, weightArray := range weights {
-			// Calculate size in bytes for this weight array
-			size := len(weightArray) * int(unsafe.Sizeof(weightArray[0]))
-			if offset+size > len(data) {
-				return fmt.Errorf("not enough space in shared memory for weight array %d", i)
-			}
-
-			// Create a byte slice view of the float32 array
-			weightBytes := (*[1 << 30]byte)(unsafe.Pointer(&weightArray[0]))[:size:size]
-
-			// Copy the bytes to shared memory at the correct offset
-			copy(data[offset:offset+size], weightBytes)
-
-			// Update offset for next array
-			offset += size
-		}*/
 		offset, err := matrixMemCopy(update.BaseWeights, data, 0)
 		if err != nil {
 			return err
@@ -380,36 +363,12 @@ func MakeCopyWeightsToShm(weightCh chan WeightUpdate) func([]byte) error {
 			return err
 		}
 
-		//change this shit up: go with the idea to move everything currently in python to go so we can store models + node ids here,
-		// calculate the new model here even if it's slower fuck it all
-		// workflow is: python sends new weights, store them as "local node"
-		// receive weights from gossip: store them as "node id"
-		// after x updates (epochs) from python (configurable), integrate the entire shebang and send it back to python
-		// python thing should need almost no modification, since it can just keep on doing its thing if golang doesn't send
-		// anything in a specific epoch
 		name := update.NodeID
 		if len(update.NodeID) < 20 {
 			name = fmt.Sprintf("%s%s", update.NodeID, strings.Repeat(" ", 20-len(update.NodeID)))
 		}
 
 		copy(data[offset:offset+20], []byte(name)[:20])
-
-		/*for i, weightArray := range update {
-			// Calculate size in bytes for this weight array
-			size := len(weightArray) * int(unsafe.Sizeof(weightArray[0]))
-			if offset+size > len(data) {
-				return fmt.Errorf("not enough space in shared memory for weight array %d", i)
-			}
-
-			// Create a byte slice view of the float32 array
-			weightBytes := (*[1 << 30]byte)(unsafe.Pointer(&weightArray[0]))[:size:size]
-
-			// Copy the bytes to shared memory at the correct offset
-			copy(data[offset:offset+size], weightBytes)
-
-			// Update offset for next array
-			offset += size
-		}*/
 
 		// Ensure changes are written to disk
 		if err := unix.Msync(data, unix.MS_SYNC); err != nil {
