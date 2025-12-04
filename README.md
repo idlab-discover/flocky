@@ -16,7 +16,7 @@ TODO
 
 ## Gossip Learning extensions
 
-The image below shows the additions to Flocky, allowing it to be used for Gossip Learning. The services, along with improvements on Gossip Learning model integration itself, are explored in a second paper ([preprint](https://arxiv.org/abs/2512.01549)).
+The image below shows the additions to Flocky, allowing it to be used for Gossip Learning. The services, along with improvements on Gossip Learning model integration itself, are detailed in a second paper ([preprint](https://arxiv.org/abs/2512.01549)).
 
 <img width="1842" height="947" alt="architecture" src="https://github.com/user-attachments/assets/ef1594c1-e4da-4498-9c1d-760aa5412668" />
 
