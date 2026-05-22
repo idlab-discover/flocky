@@ -3,11 +3,11 @@
 	"minEdgeNodes": 1,
 	"maxEdgeNodes": 1,
 	"edgeNodeStep": 1,
-	"minFogNodes": 25,
-	"maxFogNodes": 25,
-	"fogNodeStep": 25,
+	"minFogNodes": 50,
+	"maxFogNodes": 50,
+	"fogNodeStep": 50,
 	"iterations": 1,
 	"monitorPeriod": 1,
 	"monitorLoops": 600,
-	"ethInterface": "wlp0s20f3"
+	"ethInterface": "enP2p1s0"
 }

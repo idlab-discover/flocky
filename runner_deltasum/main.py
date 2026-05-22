@@ -1,10 +1,10 @@
-# filepath: runner/main.py
+ # filepath: runner/main.py
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Disable GPU
+#os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Disable GPU
 from multiprocessing import shared_memory
 import re
 import sys
-
+import traceback
 print(sys.path)
 import numpy as np
 import signal
@@ -12,63 +12,40 @@ from typing import List
 import posix_ipc
 from posix_ipc import Semaphore, O_CREAT
 
-
 from threading import Thread
 from queue import Queue, Empty
-
 import time
-import tensorflow as tf
-tf.random.set_seed(1234)
-
-gpus = tf.config.experimental.list_physical_devices('GPU')
-for gpu in gpus:
-  tf.config.experimental.set_memory_growth(gpu, True)
-
-from tensorflow.keras.datasets import mnist
-
-# cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
-
-from tensorflow.keras.utils import to_categorical
-from tensorflow.keras import Sequential
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
-
-from sklearn.model_selection import train_test_split
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-from tensorflow.keras.initializers import GlorotUniform
-initializer = GlorotUniform(seed=1234)
-
+import torch.nn.functional as F
+torch.manual_seed(1234)
 import math
-
 import json
 import platform
 import warnings
 import logging
-
 logger = logging.getLogger(__name__)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger.info("[Python] Starting execution...")
-
 sys.stdout.reconfigure(line_buffering=True)
 if platform.system() == "Windows":
     raise RuntimeError("This code requires a POSIX-compatible system")
 
+# Attempt to configure PyTorch to not use GPUs
+try:
+    device = torch.device('cuda')
+    logger.info(f"[DEBUG] Using device: {device}")
+except RuntimeError as e:
+    logger.error(f"[ERROR] Could not configure device: {e}")
+    pass # Hopes CUDA_VISIBLE_DEVICES worked
 
-# Attempt to configure TensorFlow to not use GPUs
-# try:
-#     tf.config.set_visible_devices([], 'GPU')
-#     logical_gpus = tf.config.list_logical_devices('GPU')
-#     logger.info(f"[DEBUG] Logical GPUs after setting visible devices: {len(logical_gpus)}")
-# except RuntimeError as e:
-#     # Visible devices must be set before GPUs have been initialized
-#     logger.error(f"[ERROR] Could not set visible devices: {e}")
-#     pass # Hopes CUDA_VISIBLE_DEVICES worked
-
-
-logger.info(f"TensorFlow version: {tf.__version__}")
+logger.info(f"PyTorch version: {torch.__version__}")
 logger.info(f"posix_ipc version: {posix_ipc.__version__}") # Or however its version is exposed
-
 # ——————————————————————————————————————————————————————————————
 #  Semaphore & Shared‑Memory Setup
 # ——————————————————————————————————————————————————————————————
@@ -89,13 +66,10 @@ def load_config(file="config.json"):
     logger.info(f"Loaded config: {config}")
     return config
 
-
 gossip_config = load_config("config.json")
 config_file = sys.argv[1] if len(sys.argv) > 1 else "defaultConfig.json"
 logger.info("loading arg %s", config_file)
-
 config = load_config(config_file)
-
 def extract_after_f(prefix: str) -> int:
     m = re.match(r"^f(\d+)", prefix)
     if not m:
@@ -106,9 +80,7 @@ prefix = sys.argv[2] if len(sys.argv) > 2 else "f1"
 # Example
 NODE_COUNT = extract_after_f(prefix)  # → 75
 logger.info("NODE_COUNT: %d", NODE_COUNT)
-
 incoming_counter = 0
-
 node_id = config["nodeID"]
 # Names for the IPC objects
 SHM_NAME = gossip_config["shared_memory"]["weights_name"] + node_id
@@ -116,7 +88,6 @@ SHM_META_NAME = gossip_config["shared_memory"]["metadata_name"] + node_id
 SEM_PY2GO = gossip_config["semaphores"]["python_to_go"] + node_id  # Python → Go signal
 SEM_GO2PY = gossip_config["semaphores"]["go_to_python"] + node_id  # Go → Python signal
 SEM_META = gossip_config["semaphores"]["metadata"] + node_id
-
 SHM_NAME_GO = gossip_config["shared_memory_go2py"]["weights_name"] + node_id
 SEM_GO_PY2GO = (
     gossip_config["semaphores_go2py"]["python_to_go"] + node_id
@@ -124,21 +95,25 @@ SEM_GO_PY2GO = (
 SEM_GO_GO2PY = (
     gossip_config["semaphores_go2py"]["go_to_python"] + node_id
 )  # Go → Python signal
-
 # ——————————————————————————————————————————————————————————————
 # Helper Functions
 # ——————————————————————————————————————————————————————————————
 
-
-def get_weight_info(list):
-    shapes = [arr.shape for arr in list]
-    dtypes = [
-        str(arr.dtype) for arr in list
-    ]  # Gets 'float32' instead of 'numpy.float32'
-    sizes = [arr.nbytes for arr in list]
+def get_weight_info(model):
+    """Get weight information from PyTorch model"""
+    weights = []
+    shapes = []
+    dtypes = []
+    sizes = []
+    
+    for param in model.parameters():
+        weights.append(param.data.cpu().numpy())  # Move to CPU and convert to numpy
+        shapes.append(param.data.shape)
+        dtypes.append(str(param.data.dtype))
+        sizes.append(param.data.cpu().numpy().nbytes)
+    
     total_size = sum(sizes)
     return shapes, dtypes, sizes, total_size
-
 
 def average_weights(weights: List[List[np.ndarray]]) -> List[np.ndarray]:
     # assert this
@@ -216,7 +191,6 @@ def update_corrected_model_averaging(
         models: dict[str,List[List[np.ndarray]]]
 ) -> List[np.ndarray]:
     return []
-    
 
 def variance_corrected_model_averaging(
     model_buffer: List[List[np.ndarray]], 
@@ -224,12 +198,10 @@ def variance_corrected_model_averaging(
 ) -> List[np.ndarray]:
     """
     Implements Algorithm 3 (Variance-Corrected Model Averaging).
-
     Args:
         model_buffer: List of N models, where each model is itself a list of L 
                       numpy arrays (the layer weight tensors).
         eps:          Small constant to avoid division by zero in variance ratios.
-
     Returns:
         A new list of L numpy arrays corresponding to the variance-corrected
         averaged model.
@@ -241,15 +213,8 @@ def variance_corrected_model_averaging(
     # Number of layers (L)
     # Assuming all models in the buffer have the same architecture (same number of layers)
     L = len(model_buffer[0])
-    # for model_idx, m in enumerate(model_buffer):
-    #     if len(m) != L:
-    #         raise ValueError(
-    #             f"All models must have the same number of layers. "
-    #             f"Model 0 has {L} layers, but model {model_idx} has {len(m)} layers."
-    #         )
     
-    # 1) Compute the plain averaged model (Model_avg)
-    # Model_avg is a list of L numpy arrays, where each array is the averaged layer
+    # Stack all models into arrays for efficient computation
     avg_model_layers: List[np.ndarray] = []
     for layer_idx in range(L):
         # Stack the current layer from all models in the buffer
@@ -304,6 +269,12 @@ def load_subset(path):
     y = np.load(y_path)
     return x, y
 
+def to_categorical(y, num_classes=10):
+    """Convert class labels to one-hot encoded vectors"""
+    y = y.astype(int)
+    y_categorical = np.zeros((len(y), num_classes))
+    y_categorical[np.arange(len(y)), y] = 1
+    return y_categorical
 
 def log_metrics(
     id: str, timestamp, acc, prec, rec, f1, epoch, iter, batch, val_acc, val_loss, test_acc, test_loss, lr=0.001, path="metrics.csv"
@@ -315,12 +286,10 @@ def log_metrics(
     with open(path, "a", newline="") as f:
         f.write(line + "\n")
 
-
 # ———————————————————————————————————————————————————————————————————
 #  Shared Memory Functions
 #  To write to shared memory
 # ———————————————————————————————————————————————————————————————————
-
 
 def write_metadata_to_shm(meta_bytes, size):
     """Write model weight metadata to a shared memory segment"""
@@ -330,29 +299,24 @@ def write_metadata_to_shm(meta_bytes, size):
     metadata_shm.buf[:size] = meta_bytes
     metadata_shm.close()  # Close the metadata shared memory
 
-
 def map_weights_to_shm(shm, wlist: List[List[np.ndarray]], pwlist: List[List[np.ndarray]], shapes, dtypes, sizes):
     """Copy all arrays into the shared-memory block."""
     buf = shm.buf
     offset = 0
-
     for w, shape, dtype, size in zip(wlist, shapes, dtypes, sizes):
-        np_dtype = np.dtype(dtype)
+        np_dtype = np.dtype(np.float32)
         view = np.ndarray(shape, dtype=np_dtype, buffer=buf[offset : offset + size])
         view[:] = w  # copy data
         offset += size
-
     for w, shape, dtype, size in zip(pwlist, shapes, dtypes, sizes):
-        np_dtype = np.dtype(dtype)
+        np_dtype = np.dtype(np.float32)
         view = np.ndarray(shape, dtype=np_dtype, buffer=buf[offset : offset + size])
         view[:] = w  # copy data
         offset += size
-
 # ———————————————————————————————————————————————————————————————————
-#  Batch update processing functions
+# Batch update processing functions
 #  
 # ———————————————————————————————————————————————————————————————————
-
 class WeightUpdate: 
     def __init__(self, nodeId: str, baseWeights: List[np.ndarray], update: List[np.ndarray]):
         self.nodeid = nodeId
@@ -370,56 +334,10 @@ class Metrics:
         self.val_loss = val_loss
         self.val_acc = val_acc
 
-# def batch_avg_normal(model_dict: dict[str, List[WeightUpdate]], ctr: int) -> bool: 
-#     if incoming_counter % gossip_batch_size == 0 and incoming_counter > 0:
-#         # If we have enough models, perform averaging
-#         if len(model_dict) >= 1: #pretty useless otherwise
-#             logger.info("Performing batch averaging of weights...")
-#             models: List[List[np.ndarray]] = []
-#             for node in model_dict:
-#                 wupdate = model_dict[node].pop()
-#                 # sum base + update, this method only cares about the total
-#                 total = sum_weights(wupdate.baseweights, wupdate.update)
-#                 models.append(total)
-
-#             models.append(model.get_weights())  # Add the current model weights to the list
-#             new_weights = average_weights(models)
-#             model.set_weights(new_weights)
-#             logger.info("Applied averaged weights to model.")
-            
-#             y_test_pred_probs = model.predict(x_test, verbose=0)
-#             y_test_pred = y_test_pred_probs.argmax(axis=1)
-
-#             y_test_true = y_test.argmax(axis=1)
-
-#             # 3. Compute metrics
-#             acc = accuracy_score(y_test_true, y_test_pred)
-#             prec = precision_score(
-#                 y_test_true, y_test_pred, average="macro", zero_division=0
-#             )
-#             rec = recall_score(
-#                 y_test_true, y_test_pred, average="macro", zero_division=0
-#             )
-#             f1 = f1_score(y_test_true, y_test_pred, average="macro", zero_division=0)
-
-#             ts = time.time()
-#             test_loss, test_acc = model.evaluate(x_test, y_test, verbose=0)
-#             val_loss, val_acc = model.evaluate(x_val, y_val, verbose=0)
-#             log_metrics(node_id, ts, acc, prec, rec, f1, epoch, gossip_round, batching_counter, val_acc, val_loss, test_acc, test_loss, initial_learning_rate)
-#             logger.info(f"Batch {batching_counter} accuracy: {acc:.4f}")
-
-#             return True
-#             model_list.clear()
-#             gossip_list.clear()
-#             batching_counter += 1
-#     return False
-
-
 # ———————————————————————————————————————————————————————————————————
 #  Shared Memory Functions
 #  To read from shared memory
 # ———————————————————————————————————————————————————————————————————
-
 def read_weights_from_shm(shm, shapes, dtypes, sizes):
     """Read weights from shared memory and reconstruct numpy arrays.
     Args:
@@ -427,7 +345,6 @@ def read_weights_from_shm(shm, shapes, dtypes, sizes):
         shapes: List of array shapes
         dtypes: List of data types as strings
         sizes: List of array sizes in bytes
-
     Returns:
         List of numpy arrays with original shapes and values
     """
@@ -436,50 +353,74 @@ def read_weights_from_shm(shm, shapes, dtypes, sizes):
     wupdate: List[np.ndarray] = []
     nodeid = ""
     offset = 0
-
     for shape, dtype, size in zip(shapes, dtypes, sizes):
         # Create numpy array view of the shared memory segment
-        np_dtype = np.dtype(dtype)
+        np_dtype = np.dtype(np.float32)
         array_view = np.ndarray(
             shape=shape, dtype=np_dtype, buffer=shm.buf[offset : offset + size]
         )
         # Make a copy to get independent array
         weights.append(array_view.copy())
         offset += size
-
     for shape, dtype, size in zip(shapes, dtypes, sizes):
         # Create numpy array view of the shared memory segment
-        np_dtype = np.dtype(dtype)
+        np_dtype = np.dtype(np.float32)
         array_view = np.ndarray(
             shape=shape, dtype=np_dtype, buffer=shm.buf[offset : offset + size]
         )
         # Make a copy to get independent array
         wupdate.append(array_view.copy())
         offset += size
-
     nodeid = str(bytes(shm.buf[offset : offset + 20]))
-
     update = WeightUpdate(nodeid, weights, wupdate)
     return update
 
-def calc_metrics(x_test, y_test, x_val, y_val) -> Metrics:
-    y_test_pred_probs = model.predict(x_test, verbose=0)
-    y_test_pred = y_test_pred_probs.argmax(axis=1)
-
-    y_test_true = y_test.argmax(axis=1)
-
-    # 3. Compute metrics
-    acc = accuracy_score(y_test_true, y_test_pred)
-    prec = precision_score(
-        y_test_true, y_test_pred, average="macro", zero_division=0
-    )
-    rec = recall_score(
-        y_test_true, y_test_pred, average="macro", zero_division=0
-    )
-    f1 = f1_score(y_test_true, y_test_pred, average="macro", zero_division=0)
-
-    test_loss, test_acc = model.evaluate(x_test, y_test, verbose=0)
-    val_loss, val_acc = model.evaluate(x_val, y_val, verbose=0)
+def calc_metrics(model, x_test, y_test, x_val, y_val) -> Metrics:
+    """Calculate metrics for PyTorch model"""
+    # Set model to evaluation mode
+    model.eval()
+    
+    with torch.no_grad():
+        # Test predictions
+        #x_test_tensor = torch.FloatTensor(x_test).to(device)
+        #y_test_tensor = torch.FloatTensor(y_test).to(device)
+        
+        test_outputs = model(x_test)
+        y_test_pred = test_outputs.argmax(axis=1)
+        y_test_true = y_test.argmax(axis=1)
+        
+        # Validation predictions
+        x_val_tensor = torch.FloatTensor(x_val).to(device)
+        y_val_tensor = torch.FloatTensor(y_val).to(device)
+        
+        val_outputs = model(x_val_tensor)
+        y_val_pred = val_outputs.argmax(axis=1)
+        y_val_true = y_val_tensor.argmax(axis=1)
+        
+        # Convert to numpy for sklearn metrics
+        y_test_pred_np = y_test_pred.cpu().numpy()
+        y_test_true_np = y_test_true.cpu().numpy()
+        y_val_pred_np = y_val_pred.cpu().numpy()
+        y_val_true_np = y_val_true.cpu().numpy()
+        
+        # Calculate metrics
+        acc = accuracy_score(y_test_true_np, y_test_pred_np)
+        prec = precision_score(
+            y_test_true_np, y_test_pred_np, average="macro", zero_division=0
+        )
+        rec = recall_score(
+            y_test_true_np, y_test_pred_np, average="macro", zero_division=0
+        )
+        f1 = f1_score(
+            y_test_true_np, y_test_pred_np, average="macro", zero_division=0
+        )
+        
+        # Loss calculation
+        test_loss = -F.cross_entropy(test_outputs, y_test_tensor).item()
+        val_loss = -F.cross_entropy(val_outputs, y_val_tensor).item()
+        test_acc = accuracy_score(y_test_true_np, y_test_pred_np)
+        val_acc = accuracy_score(y_val_true_np, y_val_pred_np)
+        
     return Metrics(acc, prec, rec, f1, test_loss, test_acc, val_loss, val_acc)
 
 # Function to call from thread with queue to pipe info through the queue
@@ -508,7 +449,6 @@ def read_weights(queue):
                 weights
             )  # Put the weights in the queue for the main thread to consume
             
-
     except Exception as e:
         logger.error(f"Error setting up weight reader: {e}")
     finally:
@@ -518,16 +458,42 @@ def read_weights(queue):
         except:
             pass
 
-
 class GracefulKiller:
   kill_now = False
   def __init__(self):
     signal.signal(signal.SIGINT, self.exit_gracefully)
     signal.signal(signal.SIGTERM, self.exit_gracefully)
-
   def exit_gracefully(self, signum, frame):
     logger.error(f"Signal detected: {signum}")
     self.kill_now = True
+
+class CNNModel(nn.Module):
+    def __init__(self):
+        super(CNNModel, self).__init__()
+        self.conv1 = nn.Conv2d(1, 16, 3, padding=1)
+        self.pool1 = nn.MaxPool2d(2, 2)
+        self.dropout1 = nn.Dropout(0.2)
+        self.conv2 = nn.Conv2d(16, 32, 3, padding=1)
+        self.pool2 = nn.MaxPool2d(2, 2)
+        self.dropout2 = nn.Dropout(0.3)
+        self.dropout3 = nn.Dropout(0.2)
+        self.fc1 = nn.Linear(32 * 7 * 7, 32)  # After flattening
+        self.fc2 = nn.Linear(32, 10)
+        
+    def forward(self, x):
+        x = self.pool1(F.relu(self.conv1(x)))
+        x = self.dropout1(x)
+        x = self.pool2(F.relu(self.conv2(x)))
+        x = self.dropout2(x)
+        x = torch.flatten(x, 1)
+        x = F.relu(self.fc1(x))
+        x = self.dropout3(x)
+        x = self.fc2(x)
+        return x
+
+# Initialize model and move to device
+model = CNNModel()
+model.to(device)
 
 try:
     #killer = GracefulKiller()
@@ -542,28 +508,33 @@ try:
     sem_py2go = Semaphore(SEM_PY2GO, O_CREAT, initial_value=0)
     sem_go2py = Semaphore(SEM_GO2PY, O_CREAT, initial_value=0)
     sem_meta = Semaphore(SEM_META, O_CREAT, initial_value=0)
-
     ###################################################################
     # Initialize shared memory functions
     # with the correct use of the semaphores
     ###################################################################
-    def exchange_weights_with_go(queue):
+    def exchange_weights_with_go(queue, model):
         """
         1) Python writes weights → sem_py2go.release()
         2) Python blocks on sem_go2py.acquire() until Go reads
         """
+        # Get current weights
+        weights = get_model_weights_numpy(model)
+        previous_weights = get_previous_weights_numpy()
+        
         # Attach to the existing shared memory
         try:
             shm = create_or_attach_shared_memory(
-                name=SHM_NAME, size=2*total_size
+                name=SHM_NAME, size=2*total_size  # Adjust size if needed
             )  # Attach to the existing shared memory
             while True:
                 weight_list = queue.get()
-                weights = weight_list[0]
+                current_weights = weight_list[0]
                 previous_model_weights = weight_list[1]
                 # Copy into shm
                 logger.info(f"[Python] Acquiring semaphore to write → Go")
-                map_weights_to_shm(shm, previous_model_weights, weight_diff(weights, previous_model_weights), shapes, dtypes, sizes)
+                map_weights_to_shm(shm, previous_model_weights, 
+                                   compute_weight_diff_numpy(current_weights, previous_model_weights),
+                                   shapes, dtypes, sizes)
                 sem_py2go.release()  # signal Go: data ready
                 logger.info(f"[Python] Waiting for Go to finish reading…")
                 sem_go2py.acquire()  # wait for Go to ack
@@ -597,85 +568,69 @@ try:
         metadata_shm.unlink()  # unlink the metadata shared memory
         logger.info(f"[Python] Go has read the metadata; continuing training.")
 
+    # Helper functions for PyTorch model
+    def get_model_weights_numpy(model):
+        """Get model weights as numpy arrays"""
+        weights = []
+        for param in model.parameters():
+            weights.append(param.data.cpu().numpy())
+        return weights
+    
+    def set_model_weights_numpy(model, weights):
+        """Set model weights from numpy arrays"""
+        for i, param in enumerate(model.parameters()):
+            param.data = torch.FloatTensor(weights[i]).to(device)
+    
+    def get_previous_weights_numpy():
+        """Get previous model weights (placeholder)"""
+        # This should maintain state across calls
+        return []
+    
+    def compute_weight_diff_numpy(new_weights, old_weights):
+        """Compute difference between new and old weights"""
+        return [(nw - ow) for nw, ow in zip(new_weights, old_weights)]
+    
     # ——————————————————————————————————————————————————————————————
     #  Build and Train Model
     # ——————————————————————————————————————————————————————————————
-
     # Load data
-    (_, _), (x_test, y_test) = mnist.load_data()
-
+    x_test, y_test = load_subset(f"subsets_{prefix}/mnist")  # MNIST dataset
     x_train, y_train = load_subset(f"subsets_{prefix}/subset_{node_id}")
-    x_train = x_train.astype("float32") / 255.0  # scale
-    x_test = x_test.astype("float32") / 255.0
-
-    if len(x_train.shape) == 3: # Check if channel dimension is missing
-        x_train = x_train.reshape(-1, 28, 28, 1)
-    if len(x_test.shape) == 3: # Check if channel dimension is missing
-        x_test = x_test.reshape(-1, 28, 28, 1)
-
-    # Generate a permutation of indices
-    indices = np.arange(x_train.shape[0])
-    np.random.shuffle(indices)
-
-    # Shuffle the dataset
-    x_shuffled = x_train[indices]
-    y_shuffled = y_train[indices]
-
+    
+    # Convert to PyTorch tensors
+    x_train = torch.FloatTensor(x_train).reshape(-1, 28, 28) / 255.0
+    x_test = torch.FloatTensor(x_test).reshape(-1, 28, 28) / 255.0
+    
+    #if len(x_train.shape) == 3: # Check if channel dimension is missing
+    #    x_train = x_train.reshape(-1, 28, 28, 1)
+    #if len(x_test.shape) == 3: # Check if channel dimension is missing
+     #   x_test = x_test.reshape(-1, 28, 28, 1)
+    
+    # Generate a permutation of indices and shuffle the dataset
+    #indices = torch.randperm(x_train.shape[0])
+    #x_shuffled = x_train[indices]
+    #y_shuffled = y_train[indices]
+    
+    # Convert labels to one-hot encoding
     y_train = to_categorical(y_train, 10)
-    y_test = to_categorical(y_test, num_classes=10)
-    model = Sequential([
-        Conv2D(
-            16, (3,3),
-            activation="relu",
-            padding="same",
-            input_shape=(28,28,1),
-            kernel_initializer=initializer
-        ),
-        MaxPooling2D((2,2)),
-        Dropout(0.2, seed=1234),          # also seed dropout
-        Conv2D(
-            32, (3,3),
-            activation="relu",
-            padding="same",
-            kernel_initializer=initializer
-        ),
-        MaxPooling2D((2,2)),
-        Dropout(0.3, seed=1234),
-        Flatten(),
-        Dense(32, activation="relu", kernel_initializer=initializer),
-        Dropout(0.2, seed=1234),
-        Dense(10, activation="softmax", kernel_initializer=initializer),
-    ])
-    # Define an exponential decay learning rate schedule:
-    initial_learning_rate = 1e-3
-    model.summary()
-    #lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-    #    initial_learning_rate=initial_learning_rate,
-    #    decay_steps=10,  # number of steps after which the learning rate decays
-    #    decay_rate=0.90,  # the decay factor
-    #    staircase=True,
-    #)  # if True, learning rate decays in discrete intervals
-
-    # Pass the schedule to the optimizer:
-    # optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
-    optimizer = tf.keras.optimizers.Adam(
-        learning_rate=initial_learning_rate, name="adam"
-    )
-
-    model.compile(
-        optimizer=optimizer, loss="categorical_crossentropy", metrics=["accuracy"]
-    )
-
+    y_test = to_categorical(y_test, 10)
+    
+    # Define loss function and optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    
+    # Print model architecture
+    logger.info(model)
+    
     # ——————————————————————————————————————————————————————————————
     #  Get weights and metadata on the weights
     #  (and write to shared memory)
     #  This is once per model, not per epoch
     #  (unless you change the model architecture)
     # ——————————————————————————————————————————————————————————————
-
     # Prepare shared memory once, based on initial weights
-    current_weights = model.get_weights()
-    shapes, dtypes, sizes, total_size = get_weight_info(current_weights)
+    current_weights = get_model_weights_numpy(model)
+    shapes, dtypes, sizes, total_size = get_weight_info(model)
     metadata = {
         "total_size": total_size,
         "shapes": shapes,
@@ -688,7 +643,7 @@ try:
     meta_bytes = json.dumps(metadata).encode("utf-8")
     exchange_metadata_with_go(meta_bytes)
     shm = create_or_attach_shared_memory(name=SHM_NAME, size=2*total_size+20)
-
+    
     # ———————————————————————————————————————————————————————————————
     # Attach to go semaphores after metadata exchange
     # ———————————————————————————————————————————————————————————————
@@ -698,18 +653,18 @@ try:
     sem_go_go2py = Semaphore(
         SEM_GO_GO2PY, O_CREAT, initial_value=0
     )  # Open the existing named semaphore (block until Go posts it)
+    
     # Print the model summary to see its architecture
-    model.summary()
-
+    logger.info("PyTorch CNN Model:")
+    logger.info(model)
+    
     # ——————————————————————————————————————————————————————————————
     #  Create a thread to read and send weights from Go
     #  Create queue to communicate between threads
     # ——————————————————————————————————————————————————————————————
     send_queue = Queue()
     receive_queue: Queue[WeightUpdate] = Queue()
-
     Threads = []
-
     t_read_weights = Thread(
         target=read_weights,
         args=(receive_queue,),
@@ -718,552 +673,340 @@ try:
     )
     Threads.append(t_read_weights)
     t_read_weights.start()
-
     t_write_weights = Thread(
         target=exchange_weights_with_go,
-        args=(send_queue,),
+        args=(send_queue, model),  # Pass model to the thread
         name="write_weights_thread",
         daemon=False,
     )
     Threads.append(t_write_weights)
     t_write_weights.start()
-
+    
     ###################################################################
     #  Train the model
     ###################################################################
-
     # Split the data into training and validation sets
-    x_train, x_val, y_train, y_val = train_test_split(
-        x_train, y_train, test_size=0.2, random_state=42
-    )
-
+    train_size = int(0.8 * len(x_train))
+    val_size = len(x_train) - train_size
+    x_train_split, x_val_split = torch.split(x_train, [train_size, val_size])
+    y_train_split, y_val_split = torch.split(torch.IntTensor(y_train), [train_size, val_size])
+    
     num_epochs = 200
     batch_size = 64
-    num_batches = math.ceil(x_train.shape[0] / batch_size)
-
+    num_batches = math.ceil(x_train_split.shape[0] / batch_size)
     gossip_round = 0
     gossip_list: dict[str, List[WeightUpdate]] = {}
-
     model_list: List[List[np.ndarray]] = [] # List to hold models for averaging
-
     batching_counter = 0
     gossip_batch_size: int = 10  # Number of batches after which to perform gossip averaging
-
     epoch_loss = 0
     epoch_acc = 0
-    previous_model_weights = model.get_weights()
-
+    previous_model_weights = get_model_weights_numpy(model)
+    
+    # Training loop
     for epoch in range(num_epochs):
         logger.info(f"Epoch {epoch+1}/{num_epochs}")
         epoch_loss = 0
         epoch_acc = 0
-        for i in range(num_batches):
-            start = i * batch_size
-            end = start + batch_size
-            x_batch = x_train[start:end]
-            y_batch = y_train[start:end]
-            batch_loss, batch_acc = model.train_on_batch(x_batch, y_batch, True)
-            epoch_loss += batch_loss
-            epoch_acc += batch_acc
+        
+        # Create data loader
+        train_dataset = TensorDataset(x_train_split, y_train_split)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        
+        model.train()  # Set model to training mode
+        for batch_idx, (x_batch, y_batch) in enumerate(train_loader):
+            x_batch = x_batch.unsqueeze(1).to(device)  # Add channel dimension and move to device
+            y_batch = torch.argmax(y_batch, dim=1).to(device)  # Convert one-hot to class labels
+            
+            # Forward pass
+            outputs = model(x_batch)
+            #print(outputs)
+            #print(y_batch)
+            loss = criterion(outputs, y_batch)
+            
+            # Backward pass and optimize
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            epoch_loss += loss.item()
+            # Calculate accuracy for this batch
+            predicted = outputs.argmax(axis=1)
+            actual = y_batch
+            epoch_acc += (predicted == actual).sum().item()
+        
         avg_loss = epoch_loss / num_batches
-        avg_acc = epoch_acc / num_batches
-
-        y_test_pred_probs = model.predict(x_test, verbose=0)
-        y_test_pred = y_test_pred_probs.argmax(axis=1)
-
-        y_test_true = y_test.argmax(axis=1)
-
-        # 3. Compute metrics
-        acc = accuracy_score(y_test_true, y_test_pred)
-        prec = precision_score(
-            y_test_true, y_test_pred, average="macro", zero_division=0
-        )
-        rec = recall_score(y_test_true, y_test_pred, average="macro", zero_division=0)
-        f1 = f1_score(y_test_true, y_test_pred, average="macro", zero_division=0)
-
-        ts = time.time()
-
-        test_loss, test_acc = model.evaluate(x_test, y_test, verbose=0)
-        val_loss, val_acc = model.evaluate(x_val, y_val, verbose=0)
-
-        log_metrics(node_id, ts, acc, prec, rec, f1, epoch, -1, batching_counter, val_acc, val_loss, test_acc, test_loss, initial_learning_rate)
-
-        logger.info(f"Validation loss: {val_loss:.4f}, Validation accuracy: {val_acc:.4f}")
-        logger.info(f"Epoch {epoch+1} - loss: {avg_loss:.4f}, accuracy: {avg_acc:.4f}")
-        logger.info(f"Epoch {epoch+1} - Test loss: {test_loss:.4f}, Test accuracy: {test_acc:.4f}")
+        avg_acc = epoch_acc / len(train_dataset)  # Overall accuracy
+        
+        # Calculate metrics for test set
+        model.eval()
+        with torch.no_grad():
+            x_test_tensor = torch.FloatTensor(x_test).reshape(-1, 28, 28).unsqueeze(1).to(device)
+            y_test_tensor = torch.argmax(torch.FloatTensor(y_test), dim=1).to(device)
+            
+            test_outputs = model(x_test_tensor)
+            y_test_pred = test_outputs.argmax(axis=1)
+            y_test_true = y_test_tensor
+            
+            # Convert to numpy for sklearn metrics
+            y_test_pred_np = y_test_pred.cpu().numpy()
+            y_test_true_np = y_test_true.cpu().numpy()
+            
+            test_loss = criterion(test_outputs, y_test_tensor).item()
+            acc = accuracy_score(y_test_true_np, y_test_pred_np)
+            prec = precision_score(y_test_true_np, y_test_pred_np, average="macro", zero_division=0)
+            rec = recall_score(y_test_true_np, y_test_pred_np, average="macro", zero_division=0)
+            f1 = f1_score(y_test_true_np, y_test_pred_np, average="macro", zero_division=0)
+            
+            ts = time.time()
+            
+            # Validation metrics
+            x_val_tensor = torch.FloatTensor(x_val_split).unsqueeze(1).to(device)
+            y_val_tensor = torch.argmax(y_val_split, dim=1).to(device)
+            
+            val_outputs = model(x_val_tensor)
+            val_loss = criterion(val_outputs, y_val_tensor).item()
+            y_val_pred = val_outputs.argmax(axis=1)
+            
+            val_acc = (y_val_pred == y_val_tensor).sum().item() / len(x_val_tensor)
+             #str, timestamp, acc, prec, rec, f1, epoch, iter, batch, val_acc, val_loss, test_acc, test_loss, lr=0.001
+            log_metrics(node_id, ts, acc, prec, rec, f1, epoch, -1, batching_counter, val_acc, val_loss, acc, val_loss, 0.001)
+            logger.info(f"Validation loss: {val_loss:.4f}, Validation accuracy: {val_acc:.4f}")
+            logger.info(f"Epoch {epoch+1} - loss: {avg_loss:.4f}, accuracy: {avg_acc:.4f}")
+            logger.info(f"Epoch {epoch+1} - Test loss: {test_loss:.4f}, Test accuracy: {acc:.4f}")
+            
         # Extract weights at the end of epoch
-        current_weights = model.get_weights()
+        current_weights = get_model_weights_numpy(model)
         
         # 2. Hand them off to Go (and wait for Go to read)
         # exchange_weights_with_go(current_weights)
         send_queue.put(
             [current_weights, previous_model_weights]
         )  # Send weights to the thread for writing to shared memory
-        # 3. (Optional) Here you would merge in peers’ weights from Go…
-        #time.sleep(2)
-
+        
+        # 3. (Optional) Here you would merge in peers' weights from Go…
+        # time.sleep(2)
         incoming_weights: List[WeightUpdate] = []
         while not receive_queue.empty():
             try:
                 incoming_weight = receive_queue.get_nowait()
                 incoming_weights.append(incoming_weight)
             except Empty:
-                #incoming_weights = None
                 pass
-
-        ##################################################################
-        # Ad hoc with variance-corrected model averaging type shi
-        ##################################################################
-        # if incoming_weights:
-        #     incoming_counter += 1
-        #     logger.info("DEBUG: received weights from Go")
-
-        #     # 4. Average them with the current weights
-        #     models = [current_weights, incoming_weights]
-        #     new_weights = variance_corrected_model_averaging(models)
-        #     # 5. Set the new weights in the model
-        #     model.set_weights(new_weights)
-        #     logger.info("[INCOMING] Weights received from Go, metrics:")
-        #     y_test_pred_probs = model.predict(x_test, verbose=0)
-        #     y_test_pred = y_test_pred_probs.argmax(axis=1)
-
-        #     y_test_true = y_test.argmax(axis=1)
-
-        #     # 3. Compute metrics
-        #     acc = accuracy_score(y_test_true, y_test_pred)
-        #     prec = precision_score(
-        #         y_test_true, y_test_pred, average="macro", zero_division=0
-        #     )
-        #     rec = recall_score(
-        #         y_test_true, y_test_pred, average="macro", zero_division=0
-        #     )
-        #     f1 = f1_score(y_test_true, y_test_pred, average="macro", zero_division=0)
-
-        #     ts = time.time()
-        #     log_metrics(node_id, ts, acc, prec, rec, f1, -1, gossip_round)
-
-        #     loss, acc = model.evaluate(x_val, y_val, verbose=2)
-        #     logger.info(f"Validation loss: {loss:.4f}, Validation accuracy: {acc:.4f}")
-        #     logger.info(
-        #         f"Epoch {epoch+1} - loss: {avg_loss:.4f}, accuracy: {avg_acc:.4f}"
-        #     )
-        #     gossip_round += 1
-
-        ##################################################################
-        # Batch with variance-corrected model averaging type shi
-        ##################################################################
-        # incoming_counter += 1
-        # #if len(incoming_weights) > 0:
-        # gossip_round += 1
-            
-        # for wupdate in incoming_weights: 
-        #     #if wupdate.nodeid in gossip_list:
-        #     #    gossip_list[wupdate.nodeid].append(wupdate)
-        #     #else:
-        #         gossip_list[wupdate.nodeid] = [wupdate]
         
-        # if incoming_counter % gossip_batch_size == 0 and incoming_counter > 0:
-        #     # If we have enough models, perform variance-corrected averaging
-        #     if len(gossip_list) >= 1:
-        #         logger.info("Performing variance-corrected model averaging...")
-        #         # Add the latest received model for each node
-        #         for node in gossip_list:
-        #             wupdate = gossip_list[node].pop()
-        #             # sum base + update, this method only cares about the total
-        #             total = sum_weights(wupdate.baseweights, wupdate.update)
-        #             model_list.append(total)
-
-        #         model_list.append(model.get_weights())  # Add the current model weights to the list
-        #         new_weights = variance_corrected_model_averaging(model_list)
-        #         model.set_weights(new_weights)
-        #         logger.info("Applied variance-corrected averaged weights to model.")
-        #         model_list.clear()
-        #         gossip_list.clear()
-        #         y_test_pred_probs = model.predict(x_test, verbose=0)
-        #         y_test_pred = y_test_pred_probs.argmax(axis=1)
-
-        #         y_test_true = y_test.argmax(axis=1)
-
-        #         # 3. Compute metrics
-        #         acc = accuracy_score(y_test_true, y_test_pred)
-        #         prec = precision_score(
-        #             y_test_true, y_test_pred, average="macro", zero_division=0
-        #         )
-        #         rec = recall_score(
-        #             y_test_true, y_test_pred, average="macro", zero_division=0
-        #         )
-        #         f1 = f1_score(y_test_true, y_test_pred, average="macro", zero_division=0)
-                
-        #         ts = time.time()
-        #         test_loss, test_acc = model.evaluate(x_test, y_test, verbose=0)
-        #         val_loss, val_acc = model.evaluate(x_val, y_val, verbose=0)
-        #         log_metrics(node_id, ts, acc, prec, rec, f1, epoch, gossip_round, batching_counter, val_acc, val_loss, test_acc, test_loss, initial_learning_rate)
-        #         logger.info(f"Batch {batching_counter} accuracy: {acc:.4f}")
-
-        #         batching_counter += 1
-
-        # previous_model_weights = model.get_weights()
-
         ##################################################################
-        # Batch with running average type shi
-        ##################################################################
-        # if incoming_weights.count > 0:
-        #     incoming_counter += 1
-        #     if gossip_list == []:
-        #         gossip_list = incoming_weights
-        #     else:
-        #         gossip_list = sum_weights(gossip_list, incoming_weights)
-        #     logger.info("[INCOMING] Weights received from Go round %d", gossip_round)
-        #     gossip_round += 1
-
-        # if incoming_counter % 30 == 0 and incoming_counter > 0:
-        #     # If we have enough models, perform averaging
-        #     logger.info("Performing batch averaging of weights...")
-        #     model_weights = model.get_weights()
-        #     gossip_list = sum_weights(gossip_list, model_weights)  # Add current weights to the list
-        #     new_weights = average_weights_n(gossip_list, 31)  # Average the weights
-        #     model.set_weights(new_weights)
-        #     logger.info("Applied averaged weights to model.")
-        #     gossip_list.clear()
-        #     y_test_pred_probs = model.predict(x_test, verbose=0)
-        #     y_test_pred = y_test_pred_probs.argmax(axis=1)
-
-        #     y_test_true = y_test.argmax(axis=1)
-
-        #     # 3. Compute metrics
-        #     acc = accuracy_score(y_test_true, y_test_pred)
-        #     prec = precision_score(
-        #         y_test_true, y_test_pred, average="macro", zero_division=0
-        #     )
-        #     rec = recall_score(
-        #         y_test_true, y_test_pred, average="macro", zero_division=0
-        #     )
-        #     f1 = f1_score(y_test_true, y_test_pred, average="macro", zero_division=0)
-
-        #     ts = time.time()
-        #     test_loss, test_acc = model.evaluate(x_test, y_test, verbose=0)
-        #     val_loss, val_acc = model.evaluate(x_val, y_val, verbose=0)
-        #     log_metrics(node_id, ts, acc, prec, rec, f1, epoch, gossip_round, batching_counter, val_acc, val_loss, test_acc, test_loss, initial_learning_rate)
-
-        #     logger.info(f"Batch {batching_counter} accuracy: {acc:.4f}")
-        #     batching_counter += 1
-
-        #################################################################
-        # Batch with just averaging type shi
-        #################################################################
-        # incoming_counter += 1
-        # #if len(incoming_weights) > 0:
-        # gossip_round += 1
-        
-        # for wupdate in incoming_weights: 
-        #     #if wupdate.nodeid in gossip_list:
-        #     #    gossip_list[wupdate.nodeid].append(wupdate)
-        #     #else:
-        #         gossip_list[wupdate.nodeid] = [wupdate]
-
-        # #success = batch_avg_normal(gossip_list, incoming_counter)
-        # if incoming_counter % gossip_batch_size == 0 and incoming_counter > 0:
-        #     # If we have enough models, perform averaging
-        #     if len(gossip_list) >= 1: #pretty useless otherwise
-        #         logger.info("Performing batch averaging of weights...")
-        #         for node in gossip_list:
-        #             wupdate = gossip_list[node].pop()
-        #             # sum base + update, this method only cares about the total
-        #             total = sum_weights(wupdate.baseweights, wupdate.update)
-        #             model_list.append(total)
-
-        #         model_list.append(model.get_weights())  # Add the current model weights to the list
-        #         new_weights = average_weights(model_list)
-        #         model.set_weights(new_weights)
-        #         logger.info("Applied averaged weights to model.")
-        #         model_list.clear()
-        #         gossip_list.clear()
-
-
-        #         # 3. Compute metrics
-        #         metrics = calc_metrics(x_test, y_test, x_val, y_val)
-
-        #         #for i in range(NODE_COUNT):
-        #         #    metrics = calc_metrics(x_test, y_test, x_val, y_val)
-                    
-        #         ts = time.time()
-
-        #         log_metrics(node_id, ts, metrics.accu, metrics.prec, metrics.rec, metrics.f1, epoch, gossip_round, batching_counter, metrics.val_acc, metrics.val_loss, metrics.test_acc, metrics.test_loss, initial_learning_rate)
-        #         logger.info(f"Batch {batching_counter} accuracy: {metrics.accu:.4f} val acc {metrics.val_acc:.4f} test acc {metrics.test_acc:.4f} ")
-        #         batching_counter += 1
-
-        # previous_model_weights = model.get_weights()
-
-        #################################################################
         # Delta corrected averaging normal
-        #################################################################
+        ##################################################################
         incoming_counter += 1
-        #if len(incoming_weights) > 0:
+        # if len(incoming_weights) > 0:
         gossip_round += 1
-
-        #but the thing is, this approach only works until every batch's training on the tiny local dataset starts erasing 
-        # gossip progress (we scribbled down the math on this earlier, Other Tom, check the paper scraps)
-        #so todo: implement a GROWING  learning factor for remote contributions (unlike normal learning, where the factor goes down)
+        
         for wupdate in incoming_weights: 
             if wupdate.nodeid in gossip_list:
                 gossip_list[wupdate.nodeid].append(wupdate)
             else:
                 gossip_list[wupdate.nodeid] = [wupdate]
-
-        local_diff = weight_diff(model.get_weights(), previous_model_weights)
+        
+        local_diff = compute_weight_diff_numpy(get_model_weights_numpy(model), previous_model_weights)
         localupdate = WeightUpdate("local", previous_model_weights, local_diff)
         if "local" in gossip_list:
             gossip_list["local"].append(localupdate)
         else:
             gossip_list["local"] = [localupdate]
-
-        #success = batch_avg_normal(gossip_list, incoming_counter)
+        
+        # success = batch_avg_normal(gossip_list, incoming_counter)
         if incoming_counter == 200 or (incoming_counter % gossip_batch_size == 0 and incoming_counter > 0):
             # If we have enough models, perform averaging
-            if len(gossip_list) >= 1: #pretty useless otherwise
+            if len(gossip_list) >= 1:  # pretty useless otherwise
                 logger.info("Performing batch averaging of weights...")
                 for node in gossip_list:
                     wupdate = gossip_list[node][0]
                     model_list.append(wupdate.baseweights)
-
+                
                 new_weights = average_weights(model_list)
+                
                 for node in gossip_list:
                     first = gossip_list[node][0]
-                    last= gossip_list[node].pop()
+                    last = gossip_list[node].pop()
                     delta = sum_weights(weight_diff(last.baseweights, first.baseweights), last.update)
                     divider = 0.15 + incoming_counter / 1000
                     delta = mult_weights(delta, divider)
                     new_weights = sum_weights(new_weights, delta)
                 
-                model.set_weights(new_weights)
-
+                # Apply averaged weights to model
+                set_model_weights_numpy(model, new_weights)
                 logger.info("Applied averaged and delta corrected weights to model.")
                 model_list.clear()
                 gossip_list.clear()
-                y_test_pred_probs = model.predict(x_test, verbose=0)
-                y_test_pred = y_test_pred_probs.argmax(axis=1)
+                 
+                # Calculate and log metrics
+                with torch.no_grad():
+                    x_test_tensor = torch.FloatTensor(x_test).reshape(-1, 28, 28).unsqueeze(1).to(device)
+                    y_test_tensor = torch.argmax(torch.FloatTensor(y_test), dim=1).to(device)
+                    
+                    test_outputs = model(x_test_tensor)
+                    y_test_pred = test_outputs.argmax(axis=1)
+                    y_test_true = y_test_tensor
+                    
+                    # Convert to numpy for sklearn metrics
+                    y_test_pred_np = y_test_pred.cpu().numpy()
+                    y_test_true_np = y_test_true.cpu().numpy()
+                    
+                    test_loss = criterion(test_outputs, y_test_tensor).item()
+                    acc = accuracy_score(y_test_true_np, y_test_pred_np)
+                    prec = precision_score(y_test_true_np, y_test_pred_np, average="macro", zero_division=0)
+                    rec = recall_score(y_test_true_np, y_test_pred_np, average="macro", zero_division=0)
+                    f1 = f1_score(y_test_true_np, y_test_pred_np, average="macro", zero_division=0)
+                    
+                    ts = time.time()
+                    
+                    # Validation metrics
+                    x_val_tensor = torch.FloatTensor(x_val_split).unsqueeze(1).to(device)
+                    y_val_tensor = torch.argmax(y_val_split, dim=1).to(device)
+                    
+                    val_outputs = model(x_val_tensor)
+                    val_loss = criterion(val_outputs, y_val_tensor).item()
+                    y_val_pred = val_outputs.argmax(axis=1)
+                    
+                    val_acc = (y_val_pred == y_val_tensor).sum().item() / len(x_val_tensor)
+                     #str, timestamp, acc, prec, rec, f1, epoch, iter, batch, val_acc, val_loss, test_acc, test_loss, lr=0.001
+                    log_metrics(node_id, ts, acc, prec, rec, f1, epoch, gossip_round, batching_counter, val_acc, val_loss, acc, val_loss, 0.001)
 
-                y_test_true = y_test.argmax(axis=1)
-
-                # 3. Compute metrics
-                acc = accuracy_score(y_test_true, y_test_pred)
-                prec = precision_score(
-                    y_test_true, y_test_pred, average="macro", zero_division=0
-                )
-                rec = recall_score(
-                    y_test_true, y_test_pred, average="macro", zero_division=0
-                )
-                f1 = f1_score(y_test_true, y_test_pred, average="macro", zero_division=0)
-
-                ts = time.time()
-                test_loss, test_acc = model.evaluate(x_test, y_test, verbose=0)
-                val_loss, val_acc = model.evaluate(x_val, y_val, verbose=0)
-                log_metrics(node_id, ts, acc, prec, rec, f1, epoch, gossip_round, batching_counter, val_acc, val_loss, test_acc, test_loss, initial_learning_rate)
                 logger.info(f"Batch {batching_counter} accuracy: {acc:.4f}")
                 batching_counter += 1
-
-        previous_model_weights = model.get_weights()
         
-        ###############################################################
-        # Ad hoc type check
-        ###############################################################
-        # if incoming_weights:
-        #     incoming_counter += 1
-        #     logger.info("DEBUG: received weights from Go")
-
-        #     # 4. Average them with the current weights
-        #     new_weights = average_weights(current_weights, incoming_weights)
-        #     # 5. Set the new weights in the model
-        #     model.set_weights(new_weights)
-        #     logger.info("[INCOMING] Weights received from Go, metrics:")
-        #     y_test_pred_probs = model.predict(x_test, verbose=0)
-        #     y_test_pred = y_test_pred_probs.argmax(axis=1)
-
-        #     y_test_true = y_test.argmax(axis=1)
-
-        #     # 3. Compute metrics
-        #     acc = accuracy_score(y_test_true, y_test_pred)
-        #     prec = precision_score(
-        #         y_test_true, y_test_pred, average="macro", zero_division=0
-        #     )
-        #     rec = recall_score(
-        #         y_test_true, y_test_pred, average="macro", zero_division=0
-        #     )
-        #     f1 = f1_score(y_test_true, y_test_pred, average="macro", zero_division=0)
-
-        #     ts = time.time()
-        #     test_loss, test_acc = model.evaluate(x_test, y_test, verbose=0)
-        #     val_loss, val_acc = model.evaluate(x_val, y_val, verbose=0)
-        #     log_metrics(node_id, ts, acc, prec, rec, f1, -1, gossip_round, val_acc, val_loss, test_acc, test_loss, initial_learning_rate)
-        #     # log_metrics(node_id, ts, acc, prec, rec, f1, -1, gossip_round)
-
-        #     logger.info(f"Validation loss: {val_loss:.4f}, Validation accuracy: {acc:.4f}")
-        #     logger.info(
-        #         f"Epoch {epoch+1} - loss: {avg_loss:.4f}, accuracy: {avg_acc:.4f}"
-        #     )
-        #     gossip_round += 1
-        time.sleep(1)  # Sleep for 1 second to simulate some processing time
-
+        previous_model_weights = get_model_weights_numpy(model)
+        time.sleep(1)  # Sleep for 1 second
+    
     ##################################################################
     #  Final evaluation
     ##################################################################
+    model.eval()
+    with torch.no_grad():
+        x_test_tensor = torch.FloatTensor(x_test).reshape(-1, 28, 28).unsqueeze(1).to(device)
+        y_test_tensor = torch.argmax(torch.FloatTensor(y_test), dim=1).to(device)
+        
+        test_outputs = model(x_test_tensor)
+        y_test_pred = test_outputs.argmax(axis=1)
+        y_test_true = y_test_tensor
+        
+        # Convert to numpy for sklearn metrics
+        y_test_pred_np = y_test_pred.cpu().numpy()
+        y_test_true_np = y_test_true.cpu().numpy()
+        
+        acc = accuracy_score(y_test_true_np, y_test_pred_np)
+        prec = precision_score(y_test_true_np, y_test_pred_np, average="macro", zero_division=0)
+        rec = recall_score(y_test_true_np, y_test_pred_np, average="macro", zero_division=0)
+        f1 = f1_score(y_test_true_np, y_test_pred_np, average="macro", zero_division=0)
+        
+        ts = time.time()
+        
+        # Validation metrics
+        x_val_tensor = torch.FloatTensor(x_val_split).unsqueeze(1).to(device)
+        y_val_tensor = torch.argmax(y_val_split, dim=1).to(device)
+        
+        val_outputs = model(x_val_tensor)
+        val_loss = criterion(val_outputs, y_val_tensor).item()
+        y_val_pred = val_outputs.argmax(axis=1)
+        
+        val_acc = (y_val_pred == y_val_tensor).sum().item() / len(x_val_tensor)
+        
+        # Test metrics
+        test_loss = criterion(test_outputs, y_test_tensor).item()
+        test_acc = (y_test_pred == y_test_true).sum().item() / len(x_test_tensor)
+        
+        log_metrics(node_id, ts, acc, prec, rec, f1, -1, 0, batching_counter, val_acc, val_loss, test_acc, test_loss, 0.001)
+        
+        logger.info("Test loss: %f", test_loss)
+        logger.info("Test accuracy: %f", test_acc)
+        logger.info("[PROCESSING] Weights received from Go, metrics:")
     
-    score = model.evaluate(x_test, y_test, verbose=2)
-    logger.info("Test loss: %f", score[0])
-    logger.info("Test accuracy: %f", score[1])
-
-    logger.info("[PROCESSING] Weights received from Go, metrics:")
-
-    ##################################################################
-    # Batch with variance-corrected model averaging type shi
-    ##################################################################
-    # model_weights = model.get_weights()
-    # model_list.append(model_weights)  # Add the current model weights to the list
-    # new_weights = variance_corrected_model_averaging(model_list)
-    # model.set_weights(new_weights)
-    # model_list.clear()  # Clear the model list after averaging
-
-    ################################################################
-    # Batch with running average type shi
-    ################################################################
-    # model_weights = model.get_weights()
-    # new_weights = average_weights(model_weights, gossip_list)
-    # model.set_weights(new_weights)
-
-    ###############################################################
-    # Batch with just averaging type shi
-    ###############################################################
-    # model_weights = model.get_weights()
-    # new_weights = average_weights(model_weights, gossip_list)
-    # model.set_weights(new_weights)
-    
-    ####################################################################
-    # Final check after batching
-    ####################################################################
-    y_test_pred_probs = model.predict(x_test, verbose=0)
-    y_test_pred = y_test_pred_probs.argmax(axis=1)
-
-    y_test_true = y_test.argmax(axis=1)
-
-    # 3. Compute metrics
-    acc = accuracy_score(y_test_true, y_test_pred)
-    prec = precision_score(
-        y_test_true, y_test_pred, average="macro", zero_division=0
-    )
-    rec = recall_score(
-        y_test_true, y_test_pred, average="macro", zero_division=0
-    )
-    f1 = f1_score(y_test_true, y_test_pred, average="macro", zero_division=0)
-
-    ts = time.time()
-    test_loss, test_acc = model.evaluate(x_test, y_test, verbose=0)
-    loss, acc = model.evaluate(x_val, y_val, verbose=0)
-    log_metrics(node_id, ts, acc, prec, rec, f1, -1, 0, batching_counter, val_acc, val_loss, test_acc, test_loss, initial_learning_rate)
-
-    loss, acc = model.evaluate(x_val, y_val, verbose=2)
-    logger.info(f"Validation loss: {loss:.4f}, Validation accuracy: {acc:.4f}")
-    logger.info(
-        f"Epoch {epoch+1} - loss: {avg_loss:.4f}, accuracy: {avg_acc:.4f}"
-    )
-
     # --- BEGIN CONTINUOUS GOSSIP AND AVERAGING PHASE ---
     logger.info("Entering continuous gossip and averaging phase...")
     try:
         while True:
             weights_to_send_to_go = None
-            #new_weights_received_this_cycle = False
-
             incoming_weights: List[WeightUpdate] = []
             while not receive_queue.empty():
                 try:
                     incoming_weight = receive_queue.get_nowait()
                     incoming_weights.append(incoming_weight)
                 except Empty:
-                    #incoming_weights = None
                     pass
-            # 1. Try to get weights from Go (non-blocking)
-            #try:
-            #    incoming_weights = receive_queue.get_nowait()
-            #    if incoming_weights:
-            #        new_weights_received_this_cycle = True
-            #except Empty:
-            #    incoming_weights = None
-                # logger.debug("GOSSIP PHASE: No new weights from Go in this cycle.")
-
+            
             if len(incoming_weights) > 0:
                 logger.info("GOSSIP PHASE: Received weights from Go.")
-
                 for wupdate in incoming_weights: 
                     gossip_list[wupdate.nodeid] = [wupdate]
-
+                
                 for node in gossip_list:
                     wupdate = gossip_list[node].pop()
-                    # sum base + update, this method only cares about the total
                     total = wupdate.baseweights #sum_weights(wupdate.baseweights, wupdate.update)
                     model_list.append(total)
-
-                model_list.append(model.get_weights())  # Add the current model weights to the list
-                #new_averaged_weights = average_weights(model_list)
+                
+                model_list.append(get_model_weights_numpy(model))  # Add the current model weights to the list
+                
                 new_averaged_weights = average_weights(model_list)
-
-                # Optional: Log details of incoming weights
-                #if len(incoming_weights) > 0 and incoming_weights[0] is not None:
-                #    logger.info(
-                 #       "GOSSIP PHASE: Incoming weight array 0: Shape: %s, First element: %s",
-                 #       incoming_weights[0].shape,
-                 #       incoming_weights[0][0] if incoming_weights[0].size > 0 else "N/A"
-                 #   )
-                # 2. Average them with the current model weights
-                # models = [current_model_weights, incoming_weights]
-                # new_averaged_weights = variance_corrected_model_averaging(models)
-                #new_averaged_weights = average_weights(current_model_weights, incoming_weights)
-                #previous_model_weights = current_model_weights
-                # 3. Set the new weights in the model
-                model.set_weights(new_averaged_weights)
+                
+                # Apply averaged weights to model
+                set_model_weights_numpy(model, new_averaged_weights)
                 logger.info("GOSSIP PHASE: Applied averaged weights to model.")
-                weights_to_send_to_go = [new_averaged_weights, previous_model_weights]
-
+                weights_to_send_to_go = [new_averaged_weights, get_previous_weights_numpy()]
                 model_list.clear()
                 gossip_list.clear()
-                # 4. Re-evaluate and log metrics for this gossip round
-                # Using y_test_true which was y_test.argmax(axis=1) from the training loop
-                y_test_pred_probs_gossip = model.predict(x_test, verbose=0)
-                y_test_pred_gossip = y_test_pred_probs_gossip.argmax(axis=1)
-
-                acc_gossip = accuracy_score(y_test_true, y_test_pred_gossip)
-                prec_gossip = precision_score(y_test_true, y_test_pred_gossip, average="macro", zero_division=0)
-                rec_gossip = recall_score(y_test_true, y_test_pred_gossip, average="macro", zero_division=0)
-                f1_gossip = f1_score(y_test_true, y_test_pred_gossip, average="macro", zero_division=0)
-                ts_gossip = time.time()
-                # Use epoch = -2 to distinguish from training epochs in metrics
-                val_loss, val_acc = model.evaluate(x_val, y_val, verbose=0)
-                test_loss, test_acc = model.evaluate(x_test, y_test, verbose=0)
-                log_metrics(node_id, ts_gossip, acc_gossip, prec_gossip, rec_gossip, f1_gossip, -2, gossip_round, -1, val_acc, val_loss, test_acc, test_loss, initial_learning_rate)
-
-                #loss_val_gossip, acc_val_gossip = model.evaluate(x_val, y_val, verbose=0)
-                logger.info(f"GOSSIP PHASE: Validation after averaging - Loss: {val_loss:.4f}, Accuracy: {val_acc:.4f}")
-                logger.info(f"GOSSIP PHASE: Validation after averaging - Test Loss: {test_loss:.4f}, Accuracy: {test_acc:.4f}")
+                
+                with torch.no_grad():
+                    x_test_tensor = torch.FloatTensor(x_test).reshape(-1, 28, 28).unsqueeze(1).to(device)
+                    y_test_tensor = torch.argmax(torch.FloatTensor(y_test), dim=1).to(device)
+                    
+                    test_outputs = model(x_test_tensor)
+                    y_test_pred = test_outputs.argmax(axis=1)
+                    y_test_true = y_test_tensor
+                    
+                    # Convert to numpy for sklearn metrics
+                    y_test_pred_np = y_test_pred.cpu().numpy()
+                    y_test_true_np = y_test_true.cpu().numpy()
+                    
+                    test_loss = criterion(test_outputs, y_test_tensor).item()
+                    acc = accuracy_score(y_test_true_np, y_test_pred_np)
+                    prec = precision_score(y_test_true_np, y_test_pred_np, average="macro", zero_division=0)
+                    rec = recall_score(y_test_true_np, y_test_pred_np, average="macro", zero_division=0)
+                    f1 = f1_score(y_test_true_np, y_test_pred_np, average="macro", zero_division=0)
+                    
+                    ts = time.time()
+                    
+                    # Validation metrics
+                    x_val_tensor = torch.FloatTensor(x_val_split).unsqueeze(1).to(device)
+                    y_val_tensor = torch.argmax(y_val_split, dim=1).to(device)
+                    
+                    val_outputs = model(x_val_tensor)
+                    val_loss = criterion(val_outputs, y_val_tensor).item()
+                    y_val_pred = val_outputs.argmax(axis=1)
+                    
+                    val_acc = (y_val_pred == y_val_tensor).sum().item() / len(x_val_tensor)
+                     #str, timestamp, acc, prec, rec, f1, epoch, iter, batch, val_acc, val_loss, test_acc, test_loss, lr=0.001
+                    log_metrics(node_id, ts, acc, prec, rec, f1, -2, gossip_round, -1, val_acc, val_loss, acc, val_loss, 0.001)
+                
+                logger.info(f"GOSSIP PHASE: Validation after averaging - Loss: {val_loss:.4f}, "
+                          f"Accuracy: {metrics.val_acc:.4f}")
+                logger.info(f"GOSSIP PHASE: Validation after averaging - Test Loss: {test_loss:.4f}, "
+                          f"Accuracy: {metrics.test_acc:.4f}")
                 gossip_round += 1
             else:
                 # No new weights from Go, so we'll send our current model weights
-                weights_to_send_to_go = [model.get_weights(), model.get_weights()]
-                # logger.info("GOSSIP PHASE: No new weights from Go. Will send current model weights.")
-
-
+                weights_to_send_to_go = [get_model_weights_numpy(model), get_model_weights_numpy(model)]
+                logger.info("GOSSIP PHASE: No new weights from Go. Will send current model weights.")
+            
             # 5. Push weights to Go
             if weights_to_send_to_go is not None:
                 send_queue.put(weights_to_send_to_go)
-                #if new_weights_received_this_cycle:
                 logger.info("GOSSIP PHASE: Sent new averaged weights to Go.")
-                #else:
-                 #   logger.info("GOSSIP PHASE: Sent current model weights to Go (no new incoming).")
             
             time.sleep(5)  # Adjust sleep time as needed (e.g., 2-5 seconds)
-            previous_model_weights = model.get_weights()
-
+            previous_model_weights = get_model_weights_numpy(model)
+    
     except KeyboardInterrupt:
         logger.warning("GOSSIP PHASE: KeyboardInterrupt. Exiting continuous gossip phase...")
-
 
 except KeyboardInterrupt:
     # User pressed Ctrl+C
@@ -1281,10 +1024,11 @@ except MemoryError:
     logger.error("MemoryError: Not enough memory to allocate the shared memory block.")
 except Exception as e:
     logger.error(f"An error occurred: {e}")
+    logger.error(traceback.format_exc())
 finally:
     logger.info("[Python] Script completed.")
     try:
-        if shm:
+        if hasattr(shm, 'close'):
             shm.close()
             shm.unlink()
         sem_py2go.release()

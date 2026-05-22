@@ -352,7 +352,7 @@ func startNode(discocfg string, gossipcfg string, prefix string) (map[string]int
 	}
 	pids["discoverysvc"] = discoveryPid
 	// Start the Python script
-	pythonPid, err := startProcess("../.venv/bin/python", discocfg, prefix, "python", "main.py")
+	pythonPid, err := startProcess("python", discocfg, prefix, "python", "main.py")
 	if err != nil {
 		return nil, fmt.Errorf("failed to start Python script: %v", err)
 	}
